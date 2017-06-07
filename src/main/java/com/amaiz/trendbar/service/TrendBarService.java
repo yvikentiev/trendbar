@@ -10,12 +10,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PostConstruct;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Trend bar services
@@ -25,13 +22,10 @@ public class TrendBarService {
 
     private Logger logger = LoggerFactory.getLogger(QuoteService.class);
 
-    private ScheduledExecutorService trendBarExecutor;
-
     @Autowired
     private TrendBarRepository trendBarRepository;
 
-    @Autowired
-    private QuoteService quoteService;
+    private ConcurrentHashMap<Symbol, List<TrendBar>> trendBarsMap = new ConcurrentHashMap<>();
 
     public TrendBarService() {
     }
@@ -40,17 +34,11 @@ public class TrendBarService {
         this.trendBarRepository = trendBarRepository;
     }
 
-    @PostConstruct
-    public void init()
-    {
-        trendBarExecutor = Executors.newScheduledThreadPool(Symbol.getSize());
-        registerTrendBars(Symbol.EURUSD);
-        registerTrendBars(Symbol.EURJPY);
-    }
-
-    public void stop()
-    {
-        trendBarExecutor.shutdown();
+    void registerTrendBars(Symbol symbol) {
+        this.trendBarsMap.put(symbol, Arrays.asList(
+                new TrendBar(symbol, 0.0, 0.0, Double.MIN_VALUE, Double.MAX_VALUE, TrendBarPeriod.M1, -1),
+                new TrendBar(symbol, 0.0, 0.0, Double.MIN_VALUE, Double.MAX_VALUE, TrendBarPeriod.H1, -1),
+                new TrendBar(symbol, 0.0, 0.0, Double.MIN_VALUE, Double.MAX_VALUE, TrendBarPeriod.D1, -1)));
     }
 
     /**
@@ -69,8 +57,14 @@ public class TrendBarService {
         return trendBarRepository.getTrendBars(symbol, from, to, period);
     }
 
-    void registerTrendBars(Symbol symbol) {
-        trendBarExecutor.scheduleAtFixedRate(new TrendBarTask(symbol), 5000, 1000, TimeUnit.MILLISECONDS);
+    public List<TrendBar> updateTrendBars(Quote quote) {
+        List<TrendBar> trendBars = trendBarsMap.get(quote.getSymbol());
+        if (trendBars == null)
+            throw new IllegalStateException("Trendbar is not registered for symbol " + quote.getSymbol());
+        for (TrendBar trendBar : trendBarsMap.get(quote.getSymbol())) {
+            updateTrendBar(trendBar, quote);
+        }
+        return trendBars;
     }
 
     /**
@@ -83,7 +77,7 @@ public class TrendBarService {
         double quotePrice = quote.getPrice();
         if (trendBar.getTimestamp() < 0) {
             trendBar.setOpenPrice(quotePrice);
-            trendBar.setTimestamp(System.currentTimeMillis());
+            trendBar.setTimestamp(quote.getTimestamp());
         } else {
             trendBar.setClosePrice(quotePrice);
         }
@@ -104,30 +98,4 @@ public class TrendBarService {
         }
     }
 
-    private class TrendBarTask implements Runnable {
-
-        private Symbol symbol;
-
-        private List<TrendBar> trendBars;
-
-        public TrendBarTask(Symbol symbol) {
-            this.symbol = symbol;
-            this.trendBars = Arrays.asList(
-                new TrendBar(symbol, 0.0, 0.0, Double.MIN_VALUE, Double.MAX_VALUE, TrendBarPeriod.M1, System.currentTimeMillis()),
-                new TrendBar(symbol, 0.0, 0.0, Double.MIN_VALUE, Double.MAX_VALUE, TrendBarPeriod.H1, System.currentTimeMillis()),
-                new TrendBar(symbol, 0.0, 0.0, Double.MIN_VALUE, Double.MAX_VALUE, TrendBarPeriod.D1, System.currentTimeMillis())
-            );
-        }
-
-        public void run() {
-            try {
-                Quote quote = quoteService.getQuote(symbol);
-                for (TrendBar trendBar : trendBars) {
-                    updateTrendBar(trendBar, quote);
-                }
-            } catch (Exception e) {
-                logger.error("Exception happened", e);
-            }
-        }
-    }
 }
